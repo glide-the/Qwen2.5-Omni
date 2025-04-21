@@ -1,0 +1,25 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "test",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "/mnt/ceph/develop/jiawei/Qwen2.5-Omni/web_demo.py",
+            "console": "integratedTerminal",
+            "python": "${command:python.interpreterPath}",
+            "justMyCode": false,
+            "args": [
+                "-c",
+                "/mnt/ceph/develop/jiawei/model_checkpoint/Qwen2.5-Omni-7B-GPTQ-4bit"
+            ],
+            "env": {
+                "ZHIPUAI_API_KEY": "ad08946be7341503f164c441f2a247c3.wRDvUO0r3SqRTbrS",
+                "PYTHONNOUSERSITE": "1",
+                // "http_proxy": "http://127.0.0.1:7890",
+                // "https_proxy": "http://127.0.0.1:7890",
+                "no_proxy": "localhost,127.0.0.0,::1"
+            }
+        } 
+    ]
+}

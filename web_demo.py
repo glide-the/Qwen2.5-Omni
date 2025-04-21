@@ -1,7 +1,9 @@
 import io
 import os
 import ffmpeg
-
+import torch
+import torch.nn.functional as F
+from PIL import Image
 import numpy as np
 import gradio as gr
 import soundfile as sf 
@@ -9,11 +11,87 @@ import soundfile as sf
 import modelscope_studio.components.base as ms
 import modelscope_studio.components.antd as antd
 import gradio.processing_utils as processing_utils
-
+from typing import Any, Dict, List, Optional, Tuple, Union
 from transformers import Qwen2_5OmniForConditionalGeneration, Qwen2_5OmniProcessor
+from transformers import (
+    AutoModelForVision2Seq,
+    AutoProcessor,
+    AutoTokenizer
+)
 from gradio_client import utils as client_utils
 from qwen_omni_utils import process_mm_info
 from argparse import ArgumentParser
+
+from gptqmodel import GPTQModel, QuantizeConfig, BACKEND
+from gptqmodel.models.base import BaseGPTQModel
+from gptqmodel.models.auto import MODEL_MAP, SUPPORTED_MODELS
+from gptqmodel.models._const import CPU
+
+from datasets import load_dataset
+from qwen_omni_utils import process_mm_info
+
+class Qwen25OmniThiknerGPTQ(BaseGPTQModel):
+    loader = Qwen2_5OmniForConditionalGeneration
+    base_modules = [
+        "thinker.model.embed_tokens", 
+        "thinker.model.norm", 
+        "token2wav", 
+        "thinker.audio_tower", 
+        "thinker.model.rotary_emb",
+        "thinker.visual", 
+        "talker"
+    ]
+    pre_lm_head_norm_module = "thinker.model.norm"
+    require_monkeypatch = False
+    layers_node = "thinker.model.layers"
+    layer_type = "Qwen2_5OmniDecoderLayer"
+    layer_modules = [
+        ["self_attn.k_proj", "self_attn.v_proj", "self_attn.q_proj"],
+        ["self_attn.o_proj"],
+        ["mlp.up_proj", "mlp.gate_proj"],
+        ["mlp.down_proj"],
+    ]
+   
+    def pre_quantize_generate_hook_start(self):
+        self.thinker.visual = move_to(self.thinker.visual, device=self.quantize_config.device)
+        self.thinker.audio_tower = move_to(self.thinker.audio_tower, device=self.quantize_config.device)
+
+    def pre_quantize_generate_hook_end(self):
+        self.thinker.visual = move_to(self.thinker.visual, device=CPU)
+        self.thinker.audio_tower = move_to(self.thinker.audio_tower, device=CPU)
+
+    def preprocess_dataset(self, sample: Dict) -> Dict:
+        return sample
+
+MODEL_MAP["qwen2_5_omni"] = Qwen25OmniThiknerGPTQ
+SUPPORTED_MODELS.append("qwen2_5_omni")
+
+from types import MethodType
+from transformers.utils.hub import cached_file
+@classmethod 
+def patched_from_config(cls, config, **kwargs):
+    kwargs.pop("trust_remote_code", None)
+
+    
+    model = cls._from_config(config, **kwargs)
+    spk_path = cached_file(
+        config.name_or_path,
+        "spk_dict.pt",
+        subfolder=kwargs.get("subfolder", None),
+        cache_dir=kwargs.get("cache_dir", None),
+        force_download=kwargs.get("force_download", False),
+        proxies=kwargs.get("proxies", None),
+        resume_download=kwargs.get("resume_download", None),
+        local_files_only=kwargs.get("local_files_only", False),
+        token=kwargs.get("use_auth_token", None),
+        revision=kwargs.get("revision", None),
+    )
+    if spk_path is None:
+        raise ValueError(f"Speaker dictionary not found at {spk_path}")
+    
+    model.load_speakers(spk_path)
+    return model
+Qwen2_5OmniForConditionalGeneration.from_config = patched_from_config
 
 def _load_model_processor(args):
     if args.cpu_only:
@@ -21,15 +99,14 @@ def _load_model_processor(args):
     else:
         device_map = 'auto'
 
-    # Check if flash-attn2 flag is enabled and load model accordingly
-    if args.flash_attn2:
-        model = Qwen2_5OmniForConditionalGeneration.from_pretrained(args.checkpoint_path,
-                                                    torch_dtype='auto',
-                                                    attn_implementation='flash_attention_2',
-                                                    device_map=device_map)
-    else:
-        model = Qwen2_5OmniForConditionalGeneration.from_pretrained(args.checkpoint_path, device_map=device_map, torch_dtype='auto')
 
+    # GPTQ MODEL
+    model = GPTQModel.load(
+        args.checkpoint_path,
+        device_map=device_map,
+        torch_dtype=torch.float16,
+        attn_implementation="flash_attention_2"
+    )
     processor = Qwen2_5OmniProcessor.from_pretrained(args.checkpoint_path)
     return model, processor
 
