@@ -37,7 +37,7 @@ class Qwen25OmniThiknerGPTQ(BaseGPTQModel):
         "thinker.model.norm", 
         "token2wav", 
         "thinker.audio_tower", 
-        "thinker.model.rotary_emb",
+        # "thinker.model.rotary_emb",
         "thinker.visual", 
         "talker"
     ]
